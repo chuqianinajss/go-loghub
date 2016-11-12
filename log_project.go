@@ -3,8 +3,10 @@ package sls
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/golang/glog"
 	"io/ioutil"
 	"net/http"
+	"net/http/httputil"
 )
 
 // Error defines sls error
@@ -604,4 +606,79 @@ func (p *LogProject) RemoveConfigFromMachineGroup(confName, groupName string) (e
 	}
 
 	return nil
+}
+
+type ProjectLogInput struct {
+	From     *int64
+	To       *int64
+	MaxLine  *int64
+	Topic    *string
+	LogStore *string
+	KeyWord  *string
+}
+
+func (p *LogProject) Logs(logInput ProjectLogInput) (string, error) {
+	h := map[string]string{
+		"x-sls-bodyrawsize":     "0",
+		"x-log-apiversion":      "0.4.0",
+		"x-log-signaturemethod": "hmac-sha1",
+		"Accept":                "application/x-protobuf",
+		"Accept-Encoding":       "lz4",
+	}
+	var valueInput []interface{}
+	str := ""
+	if logInput.LogStore != nil {
+		str += "/logstores/%v?"
+		valueInput = append(valueInput, *logInput.LogStore)
+	} else {
+		str += "?"
+	}
+	str += "type=log"
+	if logInput.Topic != nil {
+		str += "&topic=%v"
+		valueInput = append(valueInput, *logInput.Topic)
+	}
+	if logInput.From != nil {
+		str += "&from=%v"
+		valueInput = append(valueInput, *logInput.From)
+	}
+	if logInput.To != nil {
+		str += "&to=%v"
+		valueInput = append(valueInput, *logInput.To)
+	}
+	if logInput.MaxLine != nil {
+		str += "&line=%v"
+		valueInput = append(valueInput, *logInput.MaxLine)
+	}
+	if logInput.KeyWord != nil {
+		str += "&query=%v"
+		valueInput = append(valueInput, *logInput.KeyWord)
+	}
+	str += "&offset=0"
+	uri := fmt.Sprintf(str, valueInput...)
+	r, err := request(p, "GET", uri, h, nil)
+	if err != nil {
+		return "", err
+	}
+
+	buf, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+
+	if r.StatusCode != http.StatusOK {
+		errMsg := &Error{}
+		err = json.Unmarshal(buf, errMsg)
+		if err != nil {
+			err = fmt.Errorf("failed to get cursor")
+			dump, _ := httputil.DumpResponse(r, true)
+			if glog.V(1) {
+				glog.Error(string(dump))
+			}
+			return "", err
+		}
+		err = fmt.Errorf("%v:%v", errMsg.Code, errMsg.Message)
+		return "", err
+	}
+	return string(buf), nil
 }
