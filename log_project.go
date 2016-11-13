@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 )
 
 // Error defines sls error
@@ -611,10 +612,87 @@ func (p *LogProject) RemoveConfigFromMachineGroup(confName, groupName string) (e
 type ProjectLogInput struct {
 	From     *int64
 	To       *int64
-	MaxLine  *int64
+	MaxLine  *int
 	Topic    *string
 	LogStore *string
 	KeyWord  *string
+	OffSet   *int
+	Reverse  *bool
+}
+
+func (p *LogProject) AllLineNumber(logInput ProjectLogInput) (int, error) {
+	h := map[string]string{
+		"x-sls-bodyrawsize":     "0",
+		"x-log-apiversion":      "0.6.0",
+		"x-log-signaturemethod": "hmac-sha1",
+	}
+	var valueInput []interface{}
+	str := ""
+	if logInput.LogStore != nil {
+		str += "/logstores/%v?"
+		valueInput = append(valueInput, *logInput.LogStore)
+	} else {
+		str += "?"
+	}
+	str += "type=histogram"
+	if logInput.Topic != nil {
+		str += "&topic=%v"
+		valueInput = append(valueInput, *logInput.Topic)
+	}
+	if logInput.From != nil {
+		str += "&from=%v"
+		valueInput = append(valueInput, *logInput.From)
+	}
+	if logInput.To != nil {
+		str += "&to=%v"
+		valueInput = append(valueInput, *logInput.To)
+	}
+	if logInput.KeyWord != nil {
+		str += "&query=%v"
+		valueInput = append(valueInput, *logInput.KeyWord)
+	}
+	uri := fmt.Sprintf(str, valueInput...)
+	r, err := request(p, "GET", uri, h, nil)
+	if err != nil {
+		return 0, err
+	}
+	v, ok := r.Header["X-Sls-Progress"]
+	if !ok || len(v) == 0 {
+		err = fmt.Errorf("can't find 'x-sls-progress' header")
+		return 0, err
+	}
+	if v[0] != "Complete" {
+		err = fmt.Errorf("unexpected uncomplete")
+		return 0, err
+	}
+	linv, ok := r.Header["X-Sls-Count"]
+	if !ok || len(linv) == 0 {
+		err = fmt.Errorf("unexpected count")
+		return 0, err
+	}
+	buf, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return 0, err
+	}
+	if r.StatusCode != http.StatusOK {
+		errMsg := &Error{}
+		err = json.Unmarshal(buf, errMsg)
+		if err != nil {
+			err = fmt.Errorf("failed to get line number")
+			dump, _ := httputil.DumpResponse(r, true)
+			if glog.V(1) {
+				glog.Error(string(dump))
+			}
+			return 0, err
+		}
+		err = fmt.Errorf("%v:%v", errMsg.Code, errMsg.Message)
+		return 0, err
+	}
+	lineNumber, err := strconv.Atoi(linv[0])
+	if err != nil {
+		return 0, err
+	}
+	return lineNumber, nil
 }
 
 func (p *LogProject) Logs(logInput ProjectLogInput) (string, error) {
@@ -622,8 +700,6 @@ func (p *LogProject) Logs(logInput ProjectLogInput) (string, error) {
 		"x-sls-bodyrawsize":     "0",
 		"x-log-apiversion":      "0.4.0",
 		"x-log-signaturemethod": "hmac-sha1",
-		"Accept":                "application/x-protobuf",
-		"Accept-Encoding":       "lz4",
 	}
 	var valueInput []interface{}
 	str := ""
@@ -654,23 +730,37 @@ func (p *LogProject) Logs(logInput ProjectLogInput) (string, error) {
 		str += "&query=%v"
 		valueInput = append(valueInput, *logInput.KeyWord)
 	}
-	str += "&offset=0"
+	if logInput.OffSet != nil {
+		str += "&offset=%v"
+		valueInput = append(valueInput, *logInput.OffSet)
+	}
+	if logInput.Reverse != nil {
+		str += "&reverse=%v"
+		valueInput = append(valueInput, *logInput.Reverse)
+	}
 	uri := fmt.Sprintf(str, valueInput...)
 	r, err := request(p, "GET", uri, h, nil)
 	if err != nil {
 		return "", err
 	}
-
+	v, ok := r.Header["X-Sls-Progress"]
+	if !ok || len(v) == 0 {
+		err = fmt.Errorf("can't find 'x-sls-progress' header")
+		return "", err
+	}
+	if v[0] != "Complete" {
+		err = fmt.Errorf("unexpected uncomplete")
+		return "", err
+	}
 	buf, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		return "", err
 	}
-
 	if r.StatusCode != http.StatusOK {
 		errMsg := &Error{}
 		err = json.Unmarshal(buf, errMsg)
 		if err != nil {
-			err = fmt.Errorf("failed to get cursor")
+			err = fmt.Errorf("failed to get logs")
 			dump, _ := httputil.DumpResponse(r, true)
 			if glog.V(1) {
 				glog.Error(string(dump))
